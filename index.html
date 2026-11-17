@@ -1,31 +1,17 @@
-<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#1F4E79"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Rechnungen"><meta name="apple-mobile-web-app-status-bar-style" content="default"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" type="image/png" href="favicon-32.png"><link rel="apple-touch-icon" href="apple-touch-icon.png"></head><body><title>Rechnungstool</title>
+<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0B7A7F"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Rechnungen"><meta name="apple-mobile-web-app-status-bar-style" content="default"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" type="image/png" href="favicon-32.png"><link rel="apple-touch-icon" href="apple-touch-icon.png"></head><body><title>Rechnungstool</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 /* Layout: schmale Kopfzeile mit Reitern, darunter ein Arbeitsbereich; Rechnung als Papierblatt */
 :root{
-  --bg:#F4F5F7; --surface:#FFFFFF; --ink:#1B2430; --muted:#5A6577; --line:#DCE1E8;
-  --accent:#1F4E79; --accent-ink:#FFFFFF; --soft:#E9EFF6;
+  --bg:#F2F6F9; --surface:#FFFFFF; --ink:#1C2A39; --muted:#5B6B7B; --line:#DFE6ED;
+  --accent:#0B7A7F; --accent-ink:#FFFFFF; --soft:#E3F2F3;
   --ok:#1D7A4B; --ok-bg:#E3F3EA; --warn:#9A5600; --warn-bg:#FFF1DA; --bad:#B3261E; --bad-bg:#FBE6E4;
   --paper:#FFFFFF; --paper-ink:#1B2430;
   --f-sans:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --f-mono:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace;
-  --r:8px;
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --bg:#11151B; --surface:#1A2029; --ink:#E7ECF2; --muted:#9AA6B6; --line:#2B3441;
-    --accent:#7FB2E5; --accent-ink:#0D1520; --soft:#202B39;
-    --ok:#5FD39A; --ok-bg:#16301F; --warn:#F0B35C; --warn-bg:#35280F; --bad:#FF8F86; --bad-bg:#3A1A18;
-    --paper:#F7F8FA; --paper-ink:#1B2430; color-scheme:dark;
-  }
-}
-:root[data-theme="dark"]{
-  --bg:#11151B; --surface:#1A2029; --ink:#E7ECF2; --muted:#9AA6B6; --line:#2B3441;
-  --accent:#7FB2E5; --accent-ink:#0D1520; --soft:#202B39;
-  --ok:#5FD39A; --ok-bg:#16301F; --warn:#F0B35C; --warn-bg:#35280F; --bad:#FF8F86; --bad-bg:#3A1A18;
-  --paper:#F7F8FA; --paper-ink:#1B2430; color-scheme:dark;
+  --r:12px; color-scheme:light;
 }
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--ink);font-family:var(--f-sans);font-size:15px;line-height:1.5;
@@ -40,7 +26,8 @@ p{margin:0 0 8px}
 .top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding:12px 0 0}
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
 .brand{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-bottom:8px}
-.brand b{font-size:17px;font-weight:600}
+.brand b{font-size:18px;font-weight:600;display:inline-flex;align-items:center}
+.brand b::before{content:"€";display:inline-grid;place-items:center;width:28px;height:28px;border-radius:8px;background:var(--accent);color:#fff;margin-right:9px;font-size:16px;font-weight:600}
 .brand span{color:var(--muted);font-size:13px}
 .tabs{display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid var(--line);scrollbar-width:thin}
 .tab{appearance:none;background:none;border:0;border-bottom:3px solid transparent;color:var(--muted);font:inherit;font-weight:500;
@@ -49,7 +36,19 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .tab[aria-current="page"]{color:var(--accent);border-bottom-color:var(--accent)}
 main{padding-top:20px;display:grid;gap:16px;grid-template-columns:minmax(0,1fr)}
 /* Bausteine */
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px;box-shadow:0 1px 2px rgba(20,40,60,.05),0 6px 18px rgba(20,40,60,.04)}
+.btn.primary:hover{background:#09686C;border-color:#09686C}
+input,select,textarea{background:#fff}
+.tabs{background:var(--surface);border:1px solid var(--line);border-radius:12px 12px 0 0;padding:0 6px}
+.gate .top,.gate #banners{display:none}
+.gatebox{max-width:420px;margin:7vh auto 0;display:grid;gap:14px}
+.gatebox .logo{display:grid;place-items:center;width:56px;height:56px;border-radius:16px;background:var(--accent);color:#fff;font-size:30px;font-weight:600;margin:0 auto}
+.gatebox h1{text-align:center;font-size:26px}
+.gatebox .sub{text-align:center;color:var(--muted);margin:-6px 0 4px}
+.gatebox .seg{display:grid;grid-template-columns:1fr 1fr;background:var(--soft);border-radius:10px;padding:4px;gap:4px}
+.gatebox .seg button{appearance:none;border:0;background:none;font:inherit;font-weight:500;color:var(--muted);padding:9px;border-radius:8px;cursor:pointer}
+.gatebox .seg button[aria-pressed="true"]{background:#fff;color:var(--accent);box-shadow:0 1px 3px rgba(20,40,60,.12)}
+.gatebox .btn.primary{min-height:44px;font-size:16px;justify-content:center}
 .card.flat{padding:0;overflow:hidden}
 .card h2{margin-bottom:10px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
@@ -72,7 +71,7 @@ main{padding-top:20px;display:grid;gap:16px;grid-template-columns:minmax(0,1fr)}
 .btn[disabled]{opacity:.5;cursor:not-allowed}
 label{display:grid;gap:4px;font-size:13px;font-weight:500;color:var(--muted)}
 label.chk{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--ink);font-weight:400}
-input,select,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-height:38px;width:100%;min-width:0}
+input,select,textarea{font:inherit;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-height:38px;width:100%;min-width:0}
 input[type=checkbox],input[type=radio]{width:auto;min-height:0}
 textarea{min-height:76px;resize:vertical}
 .hint{font-size:12.5px;color:var(--muted);font-weight:400}
@@ -714,7 +713,7 @@ const isRegel = () => S().mode === 'regelbesteuert';
 /* ========== Abgleich zwischen Geräten (Konto) ========== */
 const SB_URL = 'https://bmbdpgdhbwzqltourtil.supabase.co', SB_KEY = 'sb_publishable_HAxfn7eUq-TequJAf9EVkA_G6kiZSrq';
 const SYKEY = 'rechnungstool.sync';
-const SY = { st: null, status: 'off', msg: '', busy: false, again: false, gen: 0, pushT: null, conflict: null, pendingPull: false, form: { email: '', err: '' } };
+const SY = { st: null, status: 'off', msg: '', busy: false, again: false, gen: 0, pushT: null, conflict: null, pendingPull: false, form: { email: '', err: '', mode: 'login' } };
 function syLoad() { try { const r = JSON.parse(localStorage.getItem(SYKEY) || 'null'); if (r && r.uid && r.rt) SY.st = r; } catch (e) {} SY.status = SY.st ? 'ok' : 'off'; }
 function sySave() { try { if (SY.st) localStorage.setItem(SYKEY, JSON.stringify(SY.st)); else localStorage.removeItem(SYKEY); } catch (e) {} }
 syLoad();
@@ -1180,7 +1179,22 @@ const msgBox = () => ui.msg ? `<div class="notice ok">${esc(ui.msg)}</div>` : ''
 const yearsOf = (dates) => { const s = new Set([new Date().getFullYear()]); dates.forEach(d => { if (d) s.add(Number(String(d).slice(0, 4))); }); return [...s].sort((a, b) => b - a); };
 const back = (to, label) => `<button class="btn ghost" data-act="go" data-to="${to}">← ${esc(label)}</button>`;
 
+const GATE = location.protocol !== 'file:' ? !/[?&]nogate=1/.test(location.search) : /[?&]gate=1/.test(location.search);
+function renderGate() {
+  const f = SY.form, reg = f.mode === 'reg';
+  document.body.classList.add('gate');
+  $('#main').innerHTML = `<div class="gatebox"><div class="logo">€</div><h1>Rechnungstool</h1><p class="sub">Rechnungen schreiben, Ausgaben verwalten, Jahresauswertung. Auf Handy und PC immer gleich.</p>
+  <div class="seg" role="group"><button data-act="gatemode" data-m="login" aria-pressed="${!reg}">Anmelden</button><button data-act="gatemode" data-m="reg" aria-pressed="${reg}">Neu registrieren</button></div>
+  <div class="card" style="display:grid;gap:12px">${f.err ? `<div class="notice bad" role="alert">${esc(f.err)}</div>` : ''}
+  <label>E-Mail<input type="email" id="sy-email" autocomplete="username" inputmode="email" value="${esc(f.email || '')}"></label>
+  <label>Passwort (mindestens 10 Zeichen)<input type="password" id="sy-pw" autocomplete="${reg ? 'new-password' : 'current-password'}"></label>
+  ${reg ? `<label>Passwort wiederholen<input type="password" id="sy-pw2" autocomplete="new-password"></label>` : ''}
+  <button class="btn primary" data-act="${reg ? 'syreg' : 'sylogin'}">${reg ? 'Konto anlegen und loslegen' : 'Anmelden'}</button>
+  <p class="hint" style="margin:0">${reg ? 'Einmal registrieren. Auf jedem weiteren Gerät (z. B. PC) meldest du dich nur noch mit denselben Daten an. Das Passwort gut aufbewahren: Zurücksetzen per E-Mail gibt es nicht.' : 'Neu hier? Oben auf „Neu registrieren“ tippen. Auf einem zweiten Gerät meldest du dich mit denselben Daten an.'}</p></div></div>`;
+}
 function render() {
+  if (GATE && !SY.st) { renderGate(); return; }
+  document.body.classList.remove('gate');
   const cur = TAB_OF[view.name] || view.name;
   $('#tabs').innerHTML = TABS.map(([k, t]) => `<button class="tab" data-act="go" data-to="${k}" ${k === cur ? 'aria-current="page"' : ''}>${t}</button>`).join('');
   try { const ct = $('#tabs .tab[aria-current="page"]'); if (ct && ct.scrollIntoView) ct.scrollIntoView({ inline: 'center', block: 'nearest' }); } catch (e) {}
@@ -2226,6 +2240,7 @@ async function downloadZip() {
 Object.assign(ACT, {
   sylogin: () => syLogin(false),
   syreg: () => syLogin(true),
+  gatemode: el => { SY.form.mode = el.dataset.m; SY.form.err = ''; SY.form.email = (document.getElementById('sy-email') || {}).value || SY.form.email; render(); },
   syrestore: async el => {
     const raw = await idbGet(el.dataset.k); if (!raw) return toast('Es gibt noch keine zurückgelegte Fassung.');
     let j; try { j = JSON.parse(raw); } catch (e) { return toast('Die zurückgelegte Fassung ist nicht lesbar.'); }
@@ -2234,7 +2249,7 @@ Object.assign(ACT, {
     const b = blank(); D = { ...b, ...migrate(j), settings: { ...b.settings, ...(j.settings || {}) }, meta: { ...b.meta, ...(j.meta || {}) } }; persist(); render(); toast('Fassung wiederhergestellt und wird abgeglichen.');
   },
   sysync: () => { SY.status = 'ok'; syncNow(); },
-  sylogout: () => { clearTimeout(SY.pushT); try { if (SY.st) fetch(SB_URL + '/auth/v1/logout?scope=local', { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SY.st.at } }).catch(() => {}); } catch (e) {} SY.st = null; sySave(); SY.status = 'off'; SY.conflict = null; SY.form = { email: '', err: '' }; render(); toast('Abgemeldet. Deine Daten auf diesem Gerät sind unverändert.'); },
+  sylogout: () => { clearTimeout(SY.pushT); try { if (SY.st) fetch(SB_URL + '/auth/v1/logout?scope=local', { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SY.st.at } }).catch(() => {}); } catch (e) {} SY.st = null; sySave(); SY.status = 'off'; SY.conflict = null; SY.form = { email: '', err: '', mode: 'login' }; render(); window.scrollTo(0, 0); toast('Abgemeldet. Deine Daten auf diesem Gerät sind unverändert.'); },
   sydown: async () => {
     if (!SY.st || !SY.conflict) return; try { const r = await syGetDoc(); const fresh = r || { rev: 0, data: blank() }; SY.conflict = null; if (!(await syApply(fresh, false, true))) return; if (!r) SY.st.rev = 0; syncNow(); } catch (e) { toast('Fehler: ' + e.message); }
   },
@@ -2264,7 +2279,7 @@ async function syLogin(reg) {
     const same = prev && prev.uid === r.j.user.id;
     SY.st = same ? prev : null; syTok(r.j, em.trim());
     if (!same) { SY.st.rev = 0; SY.st.dirty = false; SY.st.first = true; SY.st.done = {}; }
-    SY.form = { email: '', err: '' }; SY.status = 'ok'; sySave(); render(); toast(reg ? 'Konto angelegt.' : 'Angemeldet.'); syncNow();
+    SY.form = { email: '', err: '', mode: 'login' }; SY.status = 'ok'; sySave(); view = { name: 'home', id: null }; render(); window.scrollTo(0, 0); toast(reg ? 'Konto angelegt.' : 'Angemeldet.'); syncNow();
   } catch (e) { fail(e instanceof TypeError ? 'Keine Verbindung zum Server. Bist du online?' : 'Fehler: ' + e.message); }
 }
 
@@ -2290,7 +2305,7 @@ document.addEventListener('change', e => {
   if (t.id === 'up-files' || t.id === 'up-cam') { const fl = Array.from(t.files || []); t.value = ''; if (fl.length) upAdd(fl); }
 });
 
-document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('tr.click')) { e.preventDefault(); e.target.click(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && /^sy-(email|pw|pw2)$/.test(e.target.id || '') && document.body.classList.contains('gate')) { e.preventDefault(); const b = document.querySelector('.gatebox .btn.primary'); if (b) b.click(); return; } if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('tr.click')) { e.preventDefault(); e.target.click(); } });
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el || !ACT[el.dataset.act]) return;
   if (el.tagName === 'A') e.preventDefault();

@@ -663,7 +663,7 @@ function load() {
 }
 let otherTab = false;
 window.addEventListener('storage', e => { if (e.key === KEY && e.newValue) { otherTab = true; try { render(); } catch (x) {} } });
-function persist() { if (otherTab) return; try { localStorage.setItem(KEY, JSON.stringify(D)); storageOk = true; } catch (e) { storageOk = false; } mirror(); }
+function persist() { if (otherTab) return; try { localStorage.setItem(KEY, JSON.stringify(D)); storageOk = true; } catch (e) { storageOk = false; } mirror(); syDirty(); }
 let idbP = null;
 function idb() { if (!idbP) idbP = new Promise((res, rej) => { try { const r = indexedDB.open('rechnungstool', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); return idbP; }
 async function idbSet(k, v) { try { const db = await idb(); await new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); return true; } catch (e) { return false; } }
@@ -698,6 +698,7 @@ async function startup() {
     if (raw) { try { const j = migrate(JSON.parse(raw)), b = blank(); if ((j.invoices || []).length || (j.customers || []).length || (j.settings && j.settings.name)) { D = { ...b, ...j, settings: { ...b.settings, ...(j.settings || {}) }, meta: { ...b.meta, ...(j.meta || {}) } }; persist(); ui.msg = 'Deine Daten wurden aus dem zweiten Speicher des Browsers wiederhergestellt.'; } } catch (e) {} }
   }
   render();
+  if (SY.st) syncNow();
 }
 let D = load();
 function logEv(type, text, data) {
@@ -709,6 +710,188 @@ function logEv(type, text, data) {
 function commit(type, text, data) { if (type) logEv(type, text, data); D.meta.changes++; persist(); }
 const S = () => D.settings;
 const isRegel = () => S().mode === 'regelbesteuert';
+
+/* ========== Abgleich zwischen Geräten (Konto) ========== */
+const SB_URL = 'https://bmbdpgdhbwzqltourtil.supabase.co', SB_KEY = 'sb_publishable_HAxfn7eUq-TequJAf9EVkA_G6kiZSrq';
+const SYKEY = 'rechnungstool.sync';
+const SY = { st: null, status: 'off', msg: '', busy: false, again: false, gen: 0, pushT: null, conflict: null, pendingPull: false, form: { email: '', err: '' } };
+function syLoad() { try { const r = JSON.parse(localStorage.getItem(SYKEY) || 'null'); if (r && r.uid && r.rt) SY.st = r; } catch (e) {} SY.status = SY.st ? 'ok' : 'off'; }
+function sySave() { try { if (SY.st) localStorage.setItem(SYKEY, JSON.stringify(SY.st)); else localStorage.removeItem(SYKEY); } catch (e) {} }
+syLoad();
+const isEmptyD = () => !D.invoices.length && !D.customers.length && !D.expenses.length && !D.settings.name;
+function syUi() {
+  const b = document.getElementById('banners'); if (b) b.innerHTML = banners();
+  const a = document.activeElement;
+  if (view.name === 'backup' && !(a && /^sy-/.test(a.id || ''))) { try { render(); } catch (e) {} }
+}
+async function syAuth(path, body) {
+  const r = await fetch(SB_URL + '/auth/v1/' + path, { signal: AbortSignal.timeout(30000), method: 'POST', headers: { apikey: SB_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let j = {}; try { j = await r.json(); } catch (e) {} return { ok: r.ok, status: r.status, j };
+}
+function syTok(j, email) {
+  if (!j.access_token || !j.user) throw new Error('Anmeldung fehlgeschlagen');
+  SY.st = { ...(SY.st || {}), email: email || (SY.st && SY.st.email) || j.user.email, uid: j.user.id, at: j.access_token, rt: j.refresh_token, exp: Date.now() + (j.expires_in || 3600) * 1000 }; sySave();
+}
+async function syToken() {
+  const s = SY.st; if (!s) throw new Error('nologin');
+  if (s.exp - Date.now() > 60000) return s.at;
+  const r = await syAuth('token?grant_type=refresh_token', { refresh_token: s.rt });
+  if (!r.ok) { if ([400, 401, 403].includes(r.status)) { SY.status = 'relogin'; throw new Error('relogin'); } throw new Error('Server nicht erreichbar'); }
+  syTok(r.j); return SY.st.at;
+}
+async function syApi(path, o = {}) {
+  const t = await syToken();
+  return fetch(SB_URL + path, { ...o, signal: AbortSignal.timeout(o.body instanceof Blob ? 120000 : 30000), headers: { apikey: SB_KEY, Authorization: 'Bearer ' + t, ...(o.headers || {}) } });
+}
+async function syGetDoc() {
+  const r = await syApi('/rest/v1/docs?select=rev,data&user_id=eq.' + SY.st.uid);
+  if (!r.ok) throw new Error('Server-Fehler ' + r.status);
+  const a = await r.json(); return a.length ? a[0] : null;
+}
+async function syPush() {
+  const s = SY.st, g = SY.gen, snap = JSON.stringify(D);
+  const body = '{"data":' + snap + ',"rev":' + (s.rev + 1) + (s.rev === 0 ? ',"user_id":"' + s.uid + '"' : '') + '}';
+  let r;
+  if (s.rev === 0) r = await syApi('/rest/v1/docs', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' }, body });
+  else r = await syApi('/rest/v1/docs?user_id=eq.' + s.uid + '&rev=eq.' + s.rev, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' }, body });
+  if (r.status === 409) return 'conflict';
+  if (!r.ok) { let t = ''; try { t = await r.text(); } catch (e) {} if (/23505/.test(t)) return 'conflict'; throw new Error('Server-Fehler ' + r.status); }
+  const a = await r.json(); if (!a.length) return 'conflict';
+  s.rev = a[0].rev; s.last = nowIso(); if (SY.gen === g) { s.dirty = false; s.h = syHash(D); } sySave(); syRemember(); return 'ok';
+}
+async function syApply(remote, safe, force) {
+  if (!SY.st) return false;
+  if (remote.data == null) remote = { ...remote, data: blank() };
+  if (!syValid(remote.data)) throw new Error('Die Daten im Konto sind beschädigt. Es wurde nichts übernommen.');
+  const g = SY.gen, uidNow = SY.st.uid;
+  try { if (!isEmptyD()) await syBak('vor-abgleich', D); } catch (e) {}
+  if (!SY.st || SY.st.uid !== uidNow) return false;
+  if (!force && (SY.gen !== g || SY.st.dirty)) { SY.conflict = { remoteRev: remote.rev }; SY.status = 'conflict'; return false; }
+  const j = migrate(JSON.parse(JSON.stringify(remote.data))), b = blank(), old = D.meta;
+  const nd = { ...b, ...j, settings: { ...b.settings, ...(j.settings || {}) }, meta: { ...b.meta, ...(j.meta || {}), lastBackup: old.lastBackup, autoAt: old.autoAt, changes: old.changes || 0 } };
+  D = nd;
+  try { localStorage.setItem(KEY, JSON.stringify(D)); storageOk = true; } catch (e) { storageOk = false; }
+  mirror();
+  SY.st.rev = remote.rev; SY.st.dirty = false; SY.st.first = false; SY.st.last = nowIso(); SY.st.h = syHash(D); sySave(); syRemember(); SY.conflict = null;
+  if (view.id && ![...D.invoices, ...D.customers, ...D.expenses].some(x => x.id === view.id)) view = { name: 'home', id: null };
+  try { render(); } catch (e) { console.error(e); }
+  if (!safe) toast('Daten von deinem anderen Gerät übernommen.');
+  return true;
+}
+function syBlocked() { return ['edit', 'cust', 'exp', 'trip', 'settings'].includes(view.name) || (view.name === 'upload' && (() => { try { return upState().items.length > 0; } catch (e) { return false; } })()); }
+async function syncNow() {
+  if (!SY.st || otherTab) return;
+  if (SY.busy) { SY.again = true; return; }
+  SY.busy = true; SY.again = false;
+  try {
+    SY.status = 'busy'; SY.msg = ''; syUi();
+    const s = SY.st, remote = await syGetDoc();
+    if (SY.conflict) { SY.status = 'conflict'; return; }
+    const same = remote && syHash(remote.data && typeof remote.data === 'object' ? remote.data : {}) === syHash(D);
+    const other = syLastUid() && syLastUid() !== s.uid && !isEmptyD();
+    if (s.first) {
+      if (other) SY.conflict = { first: true, other: true, remoteRev: remote ? remote.rev : 0 };
+      else if (!remote) { s.rev = 0; if (await syPush() === 'conflict') SY.conflict = { first: true }; }
+      else if (same) { s.rev = remote.rev; s.dirty = false; s.h = syHash(D); s.first = false; }
+      else if (isEmptyD()) { if (syBlocked()) { SY.pendingPull = true; return; } if (!(await syApply(remote, true))) return; }
+      else SY.conflict = { first: true, remoteRev: remote.rev };
+    } else if (!remote) { s.rev = 0; if (await syPush() === 'conflict') SY.conflict = { remoteRev: -1 }; }
+    else if (remote.rev === s.rev) { if (s.dirty && await syPush() === 'conflict') SY.conflict = { remoteRev: remote.rev }; }
+    else if (same) { s.rev = remote.rev; s.dirty = false; s.h = syHash(D); sySave(); }
+    else if (remote.rev > s.rev && !s.dirty) { if (syBlocked()) { SY.pendingPull = true; SY.status = 'ok'; return; } SY.pendingPull = false; if (!(await syApply(remote))) { if (!SY.conflict) return; } }
+    else SY.conflict = { remoteRev: remote.rev };
+    if (SY.conflict) { SY.status = 'conflict'; return; }
+    SY.pendingPull = false; s.first = false;
+    await syFiles();
+    SY.status = 'ok'; s.last = s.last || nowIso(); sySave();
+  } catch (e) {
+    if (SY.status === 'relogin') { /* Banner zeigt es */ }
+    else { SY.status = (e instanceof TypeError || (navigator.onLine === false)) ? 'offline' : 'error'; SY.msg = e && e.message || ''; }
+  } finally { SY.busy = false; syUi(); if (SY.again) { SY.again = false; setTimeout(syncNow, 500); } }
+}
+const syDup = async r => { if (r.ok || r.status === 409) return true; let x = ''; try { x = await r.clone().text(); } catch (e) {} return /Duplicate|KeyAlreadyExists/.test(x); };
+async function syFiles() {
+  const s = SY.st; s.done = s.done || {};
+  const ids = []; D.expenses.forEach(e => e.fileId && ids.push(e.fileId)); D.invoices.forEach(i => i.fileId && ids.push(i.fileId));
+  const todo = ids.filter(id => !s.done[id]); if (!todo.length) return;
+  const remote = new Set();
+  for (let off = 0; ; off += 1000) {
+    const lr = await syApi('/storage/v1/object/list/belege', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: s.uid + '/', limit: 1000, offset: off }) });
+    if (!lr.ok) throw new Error('Speicher-Fehler ' + lr.status);
+    const a = await lr.json(); a.forEach(o => remote.add(o.name)); if (a.length < 1000) break;
+  }
+  let bad = 0, last = '';
+  for (const id of todo) {
+    try {
+      const local = await fileGet(id), has = remote.has(id + '.json');
+      if (local && has) { s.done[id] = 1; continue; }
+      if (local && !has) {
+        const u1 = await syApi('/storage/v1/object/belege/' + s.uid + '/' + id, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: local.blob });
+        if (!(await syDup(u1))) throw new Error('Foto-Upload ' + u1.status);
+        const m = { name: local.name, type: local.type, size: local.size, meta: local.meta || {}, saved: local.saved };
+        const u2 = await syApi('/storage/v1/object/belege/' + s.uid + '/' + id + '.json', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: JSON.stringify(m) });
+        if (!(await syDup(u2))) throw new Error('Foto-Upload ' + u2.status);
+        s.done[id] = 1; sySave(); continue;
+      }
+      if (!local && has) {
+        const mr = await syApi('/storage/v1/object/belege/' + s.uid + '/' + id + '.json'); const br = await syApi('/storage/v1/object/belege/' + s.uid + '/' + id);
+        if (!mr.ok || !br.ok) throw new Error('Foto-Download ' + mr.status + '/' + br.status);
+        const m = await mr.json(), blob = new Blob([await br.arrayBuffer()], { type: m.type || 'application/octet-stream' });
+        if (!(await idbSet('file:' + id, { name: String(m.name || 'Beleg'), type: String(m.type || ''), size: blob.size, blob, meta: m.meta || {}, saved: m.saved || nowIso() }))) throw new Error('Foto konnte nicht gespeichert werden');
+        s.done[id] = 1; sySave();
+      }
+    } catch (e) { if (e instanceof TypeError || e.name === 'TimeoutError' || e.name === 'AbortError') throw e; bad++; last = e.message; }
+  }
+  if (bad) throw new Error(bad + ' Foto(s) nicht abgeglichen: ' + last);
+}
+const syCanon = v => Array.isArray(v) ? '[' + v.map(syCanon).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ':' + syCanon(v[k])).join(',') + '}' : JSON.stringify(v) === undefined ? 'null' : JSON.stringify(v);
+const syHash = d => { const s = syCanon({ ...d, meta: { ...(d.meta || {}), lastBackup: 0, autoAt: 0, changes: 0 } }); let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return s.length + ':' + h; };
+function syDirty() { if (!SY.st) return; if (syHash(D) === SY.st.h) return; SY.gen++; SY.st.dirty = true; sySave(); clearTimeout(SY.pushT); SY.pushT = setTimeout(syncNow, 2500); }
+function syValid(d) {
+  const okId = x => x && typeof x === 'object' && !Array.isArray(x) && typeof x.id === 'string' && /^[\w-]{1,64}$/.test(x.id) && (x.fileId == null || (typeof x.fileId === 'string' && /^[\w-]{1,64}$/.test(x.fileId)));
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return false;
+  for (const k of ['invoices', 'customers', 'expenses', 'log']) if (!Array.isArray(d[k]) || (k !== 'log' && !d[k].every(okId))) return false;
+  return !!d.settings && typeof d.settings === 'object' && !Array.isArray(d.settings) && (d.meta == null || typeof d.meta === 'object');
+}
+const syLastUid = () => { try { return localStorage.getItem(SYKEY + '.uid') || ''; } catch (e) { return ''; } };
+const syRemember = () => { try { if (SY.st) localStorage.setItem(SYKEY + '.uid', SY.st.uid); } catch (e) {} };
+function syBak(k, data) { return idbSet(k, JSON.stringify(data)); }
+window.addEventListener('online', () => syncNow());
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
+setInterval(() => { if (SY.st && document.visibilityState === 'visible') syncNow(); }, 45000);
+const syStatusTxt = () => {
+  const s = SY.st, t = s.last ? new Date(s.last).toLocaleString('de-DE') : null;
+  if (SY.status === 'busy') return 'Gleiche gerade ab …';
+  if (SY.status === 'conflict') return 'Konflikt, bitte oben entscheiden.';
+  if (SY.status === 'relogin') return 'Anmeldung abgelaufen. Bitte unten neu anmelden.';
+  if (SY.status === 'offline') return 'Gerade offline. Änderungen werden abgeglichen, sobald du wieder online bist.';
+  if (SY.status === 'error') return 'Abgleich hat nicht geklappt' + (SY.msg ? ' (' + esc(SY.msg) + ')' : '') + '. Wird automatisch erneut versucht.';
+  if (s.dirty) return 'Änderungen warten auf den Abgleich.';
+  return t ? 'Alles abgeglichen (zuletzt ' + t + ').' : 'Verbunden.';
+};
+function syCard() {
+  const s = SY.st, f = SY.form;
+  if (s && SY.status !== 'relogin') return `<div class="card"><h2>Konto und Abgleich zwischen Geräten</h2>
+  <p>Angemeldet als <b>${esc(s.email || '')}</b>. ${syStatusTxt()}</p>
+  <p class="small">Alle Daten und Belegfotos werden mit diesem Konto abgeglichen. Auf Handy und Computer siehst du immer den gleichen Stand: dieselbe Adresse öffnen, mit diesem Konto anmelden.</p>
+  <div class="row"><button class="btn primary" data-act="sysync">Jetzt abgleichen</button><button class="btn" data-act="sylogout">Abmelden</button></div>
+  <div class="row" style="margin-top:8px"><button class="btn ghost" data-act="syrestore" data-k="vor-abgleich">Letzte ersetzte Fassung dieses Geräts wiederherstellen</button><button class="btn ghost" data-act="syrestore" data-k="vor-abgleich-konto">Letzte ersetzte Fassung aus dem Konto wiederherstellen</button></div>
+  <p class="hint">Abmelden löscht keine Daten auf diesem Gerät. Die Daten liegen verschlüsselt übertragen auf einem Server in der EU und sind nur mit deinem Passwort lesbar, aber nicht Ende-zu-Ende verschlüsselt. Mach trotzdem weiter regelmäßig eine Sicherung.</p></div>`;
+  return `<div class="card"><h2>Konto und Abgleich zwischen Geräten</h2>
+  <p class="small">Damit Handy und Computer immer den gleichen Stand haben: einmal ein Konto anlegen, dann auf jedem Gerät mit E-Mail und Passwort anmelden. Kostenlos.${s ? ' <b>Deine Anmeldung ist abgelaufen, bitte neu anmelden.</b>' : ''}</p>
+  ${f.err ? `<div class="notice bad" role="alert">${esc(f.err)}</div>` : ''}
+  <div class="grid g2"><label>E-Mail<input type="email" id="sy-email" autocomplete="username" value="${esc(f.email || (s && s.email) || '')}"></label>
+  <label>Passwort (mindestens 10 Zeichen)<input type="password" id="sy-pw" autocomplete="current-password"></label></div>
+  <label style="margin-top:8px">Passwort wiederholen (nur beim Konto anlegen)<input type="password" id="sy-pw2" autocomplete="new-password"></label>
+  <div class="row" style="margin-top:10px"><button class="btn primary" data-act="sylogin">Anmelden</button><button class="btn" data-act="syreg">Neues Konto anlegen</button></div>
+  <p class="hint">Merke dir das Passwort gut: ein Zurücksetzen per E-Mail gibt es nicht. Deine Daten bleiben auch ohne Konto auf dem Gerät.</p></div>`;
+}
+function syBanner() {
+  if (SY.status === 'relogin') return `<div class="notice warn" role="alert"><b>Abgleich pausiert: Anmeldung abgelaufen.</b> Melde dich unter „Sicherung“ neu an.<div class="row" style="margin-top:8px"><button class="btn" data-act="go" data-to="backup">Zur Anmeldung</button></div></div>`;
+  if (!SY.conflict) return '';
+  return `<div class="notice bad" role="alert"><b>${SY.conflict.other ? 'Auf diesem Gerät liegen Daten eines anderen Kontos.' : SY.conflict.first ? 'In deinem Konto liegen schon Daten, und auf diesem Gerät auch.' : 'Auf einem anderen Gerät wurde gleichzeitig etwas geändert.'}</b> Es wird nichts überschrieben, bis du entscheidest. Wer gleichzeitig auf zwei Geräten arbeitet, behält immer nur eine Seite komplett. Die ersetzte Fassung wird im Browser zurückgelegt und lässt sich unter „Sicherung“ wiederherstellen. Am besten speicherst du vorher unter „Sicherung“ eine Datei.
+  <div class="row" style="margin-top:8px"><button class="btn" data-act="sydown">Daten aus dem Konto übernehmen (dieses Gerät wird ersetzt)</button><button class="btn" data-act="syup">Daten von diesem Gerät behalten (Konto wird ersetzt)</button></div></div>`;
+}
 
 /* ========== Rechnen ========== */
 const lineCents = it => { const q = Math.round((Number(it.qty) || 0) * 1000), p = Math.round(it.price || 0), v = q * p; return Math.sign(v) * Math.floor((Math.abs(v) + 500) / 1000); };
@@ -984,6 +1167,7 @@ function go(name, id = null) {
   if (view.name === 'edit') { readEditor(); persist(); }
   view = { name, id }; ui.confirm = ''; ui.errors = []; ui.msg = '';
   render(); window.scrollTo(0, 0);
+  if (SY.pendingPull) setTimeout(syncNow, 300);
 }
 const custName = inv => (inv.snapshot && inv.snapshot.customer && inv.snapshot.customer.name) || inv.customerName || ((D.customers.find(c => c.id === inv.customerId) || {}).name) || '';
 const F = (id, label, val = '', o = {}) => `<label>${esc(label)}${o.req ? ' *' : ''}${o.rows
@@ -1009,6 +1193,7 @@ function render() {
 function banners() {
   const out = [];
   if (otherTab) out.push(`<div class="notice bad" role="alert"><b>Das Tool ist in einem zweiten Fenster geändert worden.</b> Damit nichts überschrieben wird, speichert dieses Fenster nichts mehr. Lade die Seite neu und arbeite nur in einem Fenster.<div class="row"><button class="btn primary" data-act="reloadpage">Seite neu laden</button></div></div>`);
+  { const sb = syBanner(); if (sb) out.push(sb); }
   if (!storageOk) out.push(`<div class="notice bad" role="alert"><b>Speichern im Browser ist nicht möglich.</b> Deine Eingaben gehen beim Schließen verloren. Öffne das Tool in einem normalen Browserfenster (kein privates Fenster) und mach regelmäßig eine Sicherung.</div>`);
   if (!isRegel()) { const L = limitInfo(new Date().getFullYear()), over = L.founding ? L.cur > L.limitCur : (L.prev > L.limitPrev || L.cur > L.limitCur);
     if (over) out.push(`<div class="notice bad" role="alert"><b>Umsatzgrenze überschritten.</b> ${L.founding ? 'Dein Umsatz liegt über 25.000 €.' : L.prev > L.limitPrev ? 'Dein Umsatz im Vorjahr lag über 25.000 €.' : 'Dein Umsatz liegt über 100.000 €.'} Als Kleinunternehmer darfst du dann keine Rechnungen ohne Umsatzsteuer mehr schreiben. Stelle in den Einstellungen auf „regelbesteuert“ und rufe bei Unsicherheit beim Finanzamt an.</div>`); }
@@ -1566,7 +1751,8 @@ function backupView() {
   const lb = D.meta.lastBackup, n = { inv: D.invoices.length, cu: D.customers.length, ex: D.expenses.length };
   const rs = ui.restore, ck = ui.check;
   return `<h1>Sicherung und Daten</h1>${msgBox()}${errBox()}
-  <div class="notice ${storageOk ? '' : 'bad'}">Alle Daten liegen <b>nur in diesem Browser</b> auf diesem Gerät. Wenn du den Browserverlauf löschst oder den Laptop wechselst, sind sie weg. Mach deshalb regelmäßig eine Sicherung und lege sie z. B. in Google Drive oder auf einen USB-Stick.</div>
+  <div class="notice ${storageOk ? '' : 'bad'}">${SY.st ? 'Deine Daten liegen auf diesem Gerät und werden mit deinem Konto abgeglichen.' : 'Alle Daten liegen <b>nur in diesem Browser</b> auf diesem Gerät.'} Wenn du den Browserverlauf löschst oder den Laptop wechselst, sind sie weg. Mach deshalb regelmäßig eine Sicherung und lege sie z. B. in Google Drive oder auf einen USB-Stick.</div>
+  ${syCard()}
   <div class="card"><h2>Sicherung speichern</h2><p>Aktuell: ${n.inv} Rechnungen, ${n.cu} Kunden, ${n.ex} Ausgaben. ${lb ? 'Letzte Sicherung: ' + new Date(lb).toLocaleString('de-DE') + '.' : 'Es gibt noch keine Sicherung.'}</p>
   <div class="row"><button class="btn primary" data-act="backup">Sicherung speichern</button><button class="btn" data-act="backupcopy">Sicherung als Text kopieren</button></div>
   <p class="hint">Die Datei enthält alle Daten und eine Prüfsumme, aber <b>nicht die hochgeladenen Belegfotos und Original-Rechnungen</b>. Die sicherst du zusätzlich über den Knopf „Hochgeladene Belege und Rechnungen (ZIP)“. Eine Sicherung ist erst vollständig, wenn du beides hast. Rechnungen und Belege: 8 Jahre. Sicherungsdateien, Auswertungen (EÜR) und Verfahrensdokumentation: 10 Jahre. Die Frist beginnt jeweils zum Jahresende. Hebe auch die PDF-Rechnungen auf, sie sind die Originale.</p></div>
@@ -1583,7 +1769,7 @@ function backupView() {
   <div class="card"><h2>Änderungsprotokoll</h2><div class="tablewrap" style="max-height:280px;overflow:auto"><table><tbody>${D.log.slice(-60).reverse().map(l => `<tr><td class="small muted" style="white-space:nowrap">${new Date(l.t).toLocaleString('de-DE')}</td><td class="small">${esc(l.text)}</td></tr>`).join('') || '<tr><td class="muted">Noch keine Einträge.</td></tr>'}</tbody></table></div></div>
   <details class="card"><summary style="cursor:pointer;font-weight:600">Kurzbeschreibung für das Finanzamt (Verfahrensdokumentation)</summary>
   <p class="small" style="margin-top:10px">Rechnungen werden mit dem Rechnungstool im Browser erstellt. Jede Rechnung erhält beim Erstellen automatisch die nächste fortlaufende Nummer. Sie wird festgeschrieben, sobald das PDF oder die XML gespeichert, der E-Mail-Text kopiert oder eine Zahlung eingetragen wird. Bis dahin ist sie änderbar (die Nummer bleibt gleich). Danach erfolgen Korrekturen nur durch eine Stornorechnung mit eigener Nummer. Zu jeder Rechnung wird eine Prüfsumme (SHA-256) gespeichert. Alle Vorgänge werden im Änderungsprotokoll festgehalten. Die Rechnungen werden als PDF an Kunden übermittelt. Die Daten werden im Browser gespeichert und regelmäßig als Sicherungsdatei (JSON mit Prüfsumme) auf einem separaten Speicher abgelegt. Rechnungen und Belege werden 8 Jahre aufbewahrt. Empfangene E-Rechnungen (XML oder ZUGFeRD-PDF) sind im Originalformat getrennt außerhalb des Tools aufzubewahren, das Tool kann sie derzeit nicht einlesen.</p></details>
-  <details class="card"><summary style="cursor:pointer;font-weight:600;color:var(--bad)">Alle Daten löschen</summary><p class="small" style="margin-top:10px">Löscht alles in diesem Browser. Mach vorher eine Sicherung. Zum Bestätigen tippe LÖSCHEN.</p><div class="row">${F('wipe', '', '', { ph: 'LÖSCHEN' })}<button class="btn danger" data-act="wipeok" style="align-self:end">Alles löschen</button></div></details>`;
+  <details class="card"><summary style="cursor:pointer;font-weight:600;color:var(--bad)">Alle Daten löschen</summary><p class="small" style="margin-top:10px">${SY.st ? '<b>Du bist angemeldet: Das löscht auch alles im Konto und auf allen deinen Geräten.</b>' : 'Löscht alles in diesem Browser.'} Mach vorher eine Sicherung. Zum Bestätigen tippe LÖSCHEN.</p><div class="row">${F('wipe', '', '', { ph: 'LÖSCHEN' })}<button class="btn danger" data-act="wipeok" style="align-self:end">Alles löschen</button></div></details>`;
 }
 
 const VIEWS = { home: homeView, invoices: invoicesView, inv: invView, edit: editView, alt: altView, customers: customersView, cust: custView, expenses: expensesView, exp: expView, report: reportView, trip: tripView, settings: settingsView, backup: backupView };
@@ -2037,6 +2223,51 @@ async function downloadZip() {
   if (!Object.keys(out).length) return toast('Die Dateien sind in diesem Browser nicht mehr vorhanden.');
   const zip = fflate.zipSync(out, { level: 0 }); await saveFile('Belege_und_Rechnungen_' + todayIso() + '.zip', new Blob([zip], { type: 'application/zip' })); logEv('sicherung', `ZIP mit ${Object.keys(out).length} Dateien gespeichert`); persist();
 }
+Object.assign(ACT, {
+  sylogin: () => syLogin(false),
+  syreg: () => syLogin(true),
+  syrestore: async el => {
+    const raw = await idbGet(el.dataset.k); if (!raw) return toast('Es gibt noch keine zurückgelegte Fassung.');
+    let j; try { j = JSON.parse(raw); } catch (e) { return toast('Die zurückgelegte Fassung ist nicht lesbar.'); }
+    if (!syValid(j)) return toast('Die zurückgelegte Fassung ist beschädigt.');
+    try { if (!isEmptyD()) await syBak('vor-wiederherstellung', D); } catch (e) {}
+    const b = blank(); D = { ...b, ...migrate(j), settings: { ...b.settings, ...(j.settings || {}) }, meta: { ...b.meta, ...(j.meta || {}) } }; persist(); render(); toast('Fassung wiederhergestellt und wird abgeglichen.');
+  },
+  sysync: () => { SY.status = 'ok'; syncNow(); },
+  sylogout: () => { clearTimeout(SY.pushT); try { if (SY.st) fetch(SB_URL + '/auth/v1/logout?scope=local', { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SY.st.at } }).catch(() => {}); } catch (e) {} SY.st = null; sySave(); SY.status = 'off'; SY.conflict = null; SY.form = { email: '', err: '' }; render(); toast('Abgemeldet. Deine Daten auf diesem Gerät sind unverändert.'); },
+  sydown: async () => {
+    if (!SY.st || !SY.conflict) return; try { const r = await syGetDoc(); const fresh = r || { rev: 0, data: blank() }; SY.conflict = null; if (!(await syApply(fresh, false, true))) return; if (!r) SY.st.rev = 0; syncNow(); } catch (e) { toast('Fehler: ' + e.message); }
+  },
+  syup: async () => {
+    if (!SY.st || !SY.conflict) return;
+    try { const r = await syGetDoc(); if (r) { try { await idbSet('vor-abgleich-konto', JSON.stringify(r.data)); } catch (e) {} } SY.st.rev = r ? r.rev : 0; SY.st.first = false; SY.st.dirty = true; SY.st.h = ''; SY.conflict = null; sySave(); syRemember(); SY.status = 'ok'; syncNow(); } catch (e) { toast('Fehler: ' + e.message); }
+  }
+});
+async function syLogin(reg) {
+  const em = (document.getElementById('sy-email') || {}).value || '', pw = (document.getElementById('sy-pw') || {}).value || '', pw2 = (document.getElementById('sy-pw2') || {}).value || '';
+  SY.form.email = em.trim(); SY.form.err = '';
+  const fail = m => { SY.form.err = m; render(); };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(em.trim())) return fail('Bitte eine gültige E-Mail eintragen.');
+  if (pw.length < 10) return fail('Das Passwort braucht mindestens 10 Zeichen.');
+  if (reg && pw !== pw2) return fail('Die beiden Passwörter sind nicht gleich.');
+  const prev = SY.st;
+  try {
+    const r = reg ? await syAuth('signup', { email: em.trim(), password: pw }) : await syAuth('token?grant_type=password', { email: em.trim(), password: pw });
+    if (!r.ok || !r.j.access_token) {
+      const m = (r.j && (r.j.msg || r.j.error_description || r.j.message || '')) + '';
+      if (r.status === 429) return fail('Zu viele Versuche. Bitte in ein paar Minuten noch einmal.');
+      if (reg && /not allowed|disabled/i.test(m)) return fail('Neue Konten sind gesperrt. Bitte mit dem vorhandenen Konto anmelden.');
+      if (reg && (/already|registered/i.test(m) || (r.ok && !r.j.access_token))) return fail('Diese E-Mail hat schon ein Konto. Bitte „Anmelden“ benutzen.');
+      if (!reg) return fail('E-Mail oder Passwort stimmt nicht.');
+      return fail('Das hat nicht geklappt' + (m ? ' (' + m + ')' : '') + '.');
+    }
+    const same = prev && prev.uid === r.j.user.id;
+    SY.st = same ? prev : null; syTok(r.j, em.trim());
+    if (!same) { SY.st.rev = 0; SY.st.dirty = false; SY.st.first = true; SY.st.done = {}; }
+    SY.form = { email: '', err: '' }; SY.status = 'ok'; sySave(); render(); toast(reg ? 'Konto angelegt.' : 'Angemeldet.'); syncNow();
+  } catch (e) { fail(e instanceof TypeError ? 'Keine Verbindung zum Server. Bist du online?' : 'Fehler: ' + e.message); }
+}
+
 Object.assign(ACT, {
   uprech: () => { const u = upState(); u.kind = 'rechnung'; u.note = ''; go('upload'); },
   upkind: el => { const u = upState(); u.kind = el.dataset.k; u.note = ''; render(); },
